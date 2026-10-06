@@ -10,6 +10,7 @@ http = requests.Session()
 # --- Keys and models (set these in Render > Environment) ---
 GROQ_KEY = os.environ.get("GROQ_API_KEY", "")
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_FAST = os.environ.get("GROQ_FAST_MODEL", "llama-3.1-8b-instant")
 API_KEY = os.environ.get("GEMINI_API_KEY", "")
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
 FALLBACK = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-3.1-flash-lite,gemini-3.8-flash")
@@ -70,32 +71,56 @@ def fail(msg, code=500):
     return jsonify({"reply": msg, "remember": [], "actions": []}), code
 
 
-def call_groq(system, history, message):
+def parse_json(text):
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    a, b = text.find("{"), text.rfind("}")
+    if a != -1 and b > a:
+        try:
+            return json.loads(text[a : b + 1])
+        except Exception:
+            pass
+    t = text.strip()
+    return {"reply": t, "remember": [], "actions": []} if t else None
+
+
+def call_groq(model, system, history, message):
     msgs = [{"role": "system", "content": system}]
     for h in history:
         msgs.append(
             {"role": "assistant" if h["role"] == "model" else "user", "content": h["text"]}
         )
     msgs.append({"role": "user", "content": message})
+    err = "unknown error"
     try:
-        r = http.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            json={
-                "model": GROQ_MODEL,
+        for use_json in (True, False):
+            payload = {
+                "model": model,
                 "messages": msgs,
                 "temperature": 0.8,
                 "max_tokens": 400,
-                "response_format": {"type": "json_object"},
-            },
-            headers={"Authorization": "Bearer " + GROQ_KEY},
-            timeout=15,
-        )
-        data = r.json()
-        if "choices" in data:
-            return json.loads(data["choices"][0]["message"]["content"]), None
-        return None, "Groq: " + data.get("error", {}).get("message", "error")
+            }
+            if use_json:
+                payload["response_format"] = {"type": "json_object"}
+            r = http.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                json=payload,
+                headers={"Authorization": "Bearer " + GROQ_KEY},
+                timeout=12,
+            )
+            data = r.json()
+            if "choices" in data:
+                out = parse_json(data["choices"][0]["message"]["content"] or "")
+                if out:
+                    return out, None
+            err = data.get("error", {}).get("message", "empty reply")
+            if r.status_code in (401, 429, 500, 503):
+                break
+        return None, err
     except Exception as e:
-        return None, "Groq: " + str(e)
+        return None, str(e)
 
 
 def call_gemini(model, system, history, message):
@@ -113,18 +138,35 @@ def call_gemini(model, system, history, message):
     }
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     try:
-        r = http.post(url, json=body, headers={"x-goog-api-key": API_KEY}, timeout=25)
+        r = http.post(url, json=body, headers={"x-goog-api-key": API_KEY}, timeout=20)
         data = r.json()
         if "candidates" not in data and r.status_code == 400 and "think" in str(data).lower():
             body["generationConfig"].pop("thinkingConfig", None)
-            r = http.post(url, json=body, headers={"x-goog-api-key": API_KEY}, timeout=25)
+            r = http.post(url, json=body, headers={"x-goog-api-key": API_KEY}, timeout=20)
             data = r.json()
         if "candidates" in data:
-            text = data["candidates"][0]["content"]["parts"][0]["text"]
-            return json.loads(text), None
-        return None, "Gemini: " + data.get("error", {}).get("message", "error")
+            out = parse_json(data["candidates"][0]["content"]["parts"][0]["text"])
+            if out:
+                return out, None
+        return None, data.get("error", {}).get("message", "empty reply")
     except Exception as e:
-        return None, "Gemini: " + str(e)
+        return None, str(e)
+
+
+def build_chain():
+    chain = []
+    if GROQ_KEY:
+        chain += [("groq", GROQ_MODEL), ("groq", GROQ_FAST)]
+    if API_KEY:
+        gem = [MODEL] + [x.strip() for x in FALLBACK.split(",") if x.strip() and x.strip() != MODEL]
+        chain += [("gemini", m) for m in gem]
+    return chain
+
+
+def run(kind, model, system, history, message):
+    if kind == "groq":
+        return call_groq(model, system, history, message)
+    return call_gemini(model, system, history, message)
 
 
 @app.route("/")
@@ -132,11 +174,23 @@ def home():
     return send_from_directory(".", "index.html")
 
 
+@app.route("/status")
+def status():
+    if PASSWORD and request.args.get("pass", "") != PASSWORD:
+        return "Wrong password. Use /status?pass=YOURPASSWORD", 401
+    res = {}
+    for kind, m in build_chain():
+        out, err = run(kind, m, 'Reply with JSON: {"reply": "ok", "remember": [], "actions": []}', [], "hi")
+        res[kind + ":" + m] = "OK" if out else "FAIL: " + str(err)
+    return jsonify(res)
+
+
 @app.route("/chat", methods=["POST"])
 def chat():
     if PASSWORD and request.headers.get("X-Pass", "") != PASSWORD:
         return fail("Wrong password.", 401)
-    if not GROQ_KEY and not API_KEY:
+    chain = build_chain()
+    if not chain:
         return fail("No API key is set on the server (GROQ_API_KEY or GEMINI_API_KEY).")
 
     d = request.get_json(force=True)
@@ -150,26 +204,33 @@ def chat():
         actions_help=NATIVE_HELP if d.get("native") else BROWSER_HELP,
     )
 
-    out, err = None, "no provider"
-    if GROQ_KEY:
-        out, err = call_groq(system, history, message)
-    if out is None and API_KEY:
-        models = [MODEL] + [x.strip() for x in FALLBACK.split(",") if x.strip() and x.strip() != MODEL]
-        for m in models:
-            out, err = call_gemini(m, system, history, message)
+    start = time.time()
+    errors = []
+    for rnd in range(2):
+        for kind, m in chain:
+            out, err = run(kind, m, system, history, message)
             if out is not None:
-                break
-            time.sleep(0.2)
+                return jsonify(
+                    {
+                        "reply": out.get("reply", ""),
+                        "remember": out.get("remember", []),
+                        "actions": out.get("actions", []),
+                    }
+                )
+            errors.append(m + ": " + str(err))
+        if time.time() - start > 15:
+            break
+        time.sleep(1)
 
-    if out is None:
-        return fail("Both AI services are busy right now. Please try again in a moment. (" + str(err) + ")")
-    return jsonify(
+    resp = jsonify(
         {
-            "reply": out.get("reply", ""),
-            "remember": out.get("remember", []),
-            "actions": out.get("actions", []),
+            "reply": "यार, अभी नेटवर्क में थोड़ी दिक्कत है। एक बार फिर बोल ना।",
+            "remember": [],
+            "actions": [],
+            "debug": errors[-6:],
         }
     )
+    return resp, 503
 
 
 if __name__ == "__main__":
