@@ -1,12 +1,14 @@
 import os
 import json
+import time
 import requests
 from flask import Flask, request, jsonify, send_from_directory
 
 app = Flask(__name__)
 
 API_KEY = os.environ.get("GEMINI_API_KEY", "")
-MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+FALLBACK = os.environ.get("GEMINI_FALLBACK_MODEL", "")
 PASSWORD = os.environ.get("APP_PASSWORD", "")
 
 SYSTEM = """तेरा नाम यशश्री है। यूज़र तुझे यशु या बच्चा भी बुलाता है, तीनों नाम पर तू अपनी ही है।
@@ -85,7 +87,6 @@ def chat():
         contents.append({"role": h["role"], "parts": [{"text": h["text"]}]})
     contents.append({"role": "user", "parts": [{"text": d.get("message", "")}]})
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent"
     body = {
         "system_instruction": {"parts": [{"text": system}]},
         "contents": contents,
@@ -95,23 +96,32 @@ def chat():
         },
     }
 
+    models = [MODEL] + ([FALLBACK] if FALLBACK and FALLBACK != MODEL else [])
+    last_err = "unknown error"
     try:
-        r = requests.post(
-            url, json=body, headers={"x-goog-api-key": API_KEY}, timeout=60
-        )
-        data = r.json()
-        if "candidates" not in data:
-            err = data.get("error", {}).get("message", "unknown error")
-            return fail("Gemini error: " + err)
-        text = data["candidates"][0]["content"]["parts"][0]["text"]
-        out = json.loads(text)
-        return jsonify(
-            {
-                "reply": out.get("reply", ""),
-                "remember": out.get("remember", []),
-                "actions": out.get("actions", []),
-            }
-        )
+        for m in models:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent"
+            for attempt in range(3):
+                r = requests.post(
+                    url, json=body, headers={"x-goog-api-key": API_KEY}, timeout=60
+                )
+                data = r.json()
+                if "candidates" in data:
+                    text = data["candidates"][0]["content"]["parts"][0]["text"]
+                    out = json.loads(text)
+                    return jsonify(
+                        {
+                            "reply": out.get("reply", ""),
+                            "remember": out.get("remember", []),
+                            "actions": out.get("actions", []),
+                        }
+                    )
+                last_err = data.get("error", {}).get("message", "unknown error")
+                if r.status_code in (429, 500, 503):
+                    time.sleep(1.5 * (attempt + 1))
+                    continue
+                break
+        return fail("Gemini is busy right now. Please try again in a moment. (" + last_err + ")")
     except Exception as e:
         return fail("Something went wrong: " + str(e))
 
