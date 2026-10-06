@@ -1,0 +1,27 @@
+name: Keep Yashshri Awake
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: keep-alive
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Ping server every 40 seconds
+        env:
+          APP_URL: "https://yashshri.onrender.com"
+        run: |
+          end=$((SECONDS+290))
+          while [ $SECONDS -lt $end ]; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 "$APP_URL" || echo "fail")
+            echo "$(date -u +%T) -> $code"
+            sleep 40
+          done
+          
