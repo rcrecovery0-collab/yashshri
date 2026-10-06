@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#120f1c">
+<title>Yashshri</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Mukta:wght@300;400;600&family=Tiro+Devanagari+Hindi&display=swap" rel="stylesheet">
+<style>
+:root{
+  --night:#120f1c; --dusk:#231b36; --petal:#f7b6c8; --saffron:#ffc46b; --mist:#cfc8e0;
+}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;background:var(--night);color:var(--mist);font-family:'Mukta',sans-serif;font-size:17px}
+body{display:flex;flex-direction:column;height:100dvh;max-width:560px;margin:0 auto}
+header{display:flex;align-items:center;justify-content:space-between;padding:14px 18px 6px}
+header h1{font-family:'Tiro Devanagari Hindi',serif;font-weight:400;font-size:28px;color:var(--petal)}
+header .tools{display:flex;gap:6px}
+header button{background:none;border:1px solid #3a2f55;color:var(--mist);border-radius:6px;padding:5px 10px;font:inherit;font-size:14px}
+#log{flex:1;overflow-y:auto;padding:10px 18px;display:flex;flex-direction:column;gap:14px}
+.msg{max-width:88%;line-height:1.5}
+.ai{color:#fff;align-self:flex-start;border-left:2px solid var(--petal);padding-left:10px}
+.me{align-self:flex-end;color:var(--mist);text-align:right;opacity:.85}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.chips a{color:var(--night);background:var(--saffron);text-decoration:none;padding:6px 12px;border-radius:999px;font-size:15px;font-weight:600}
+#live{min-height:24px;text-align:center;font-size:15px;color:var(--saffron);padding:0 18px}
+#stage{display:flex;flex-direction:column;align-items:center;padding:6px 0 4px}
+#orb{width:104px;height:104px;border-radius:50%;border:0;background:radial-gradient(circle at 35% 30%,#fff3 0,transparent 40%),var(--petal);box-shadow:0 0 0 0 #f7b6c866;transition:background .4s}
+#orb.listen{background:radial-gradient(circle at 35% 30%,#fff4 0,transparent 40%),var(--saffron);animation:pulse 1.2s infinite}
+#orb.think{background:radial-gradient(circle at 35% 30%,#fff2 0,transparent 40%),#8e7cc3;animation:pulse 2.2s infinite}
+#orb.speak{animation:pulse .7s infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 #f7b6c899}100%{box-shadow:0 0 0 34px #f7b6c800}}
+#state{margin-top:8px;font-size:14px;opacity:.7}
+form{display:flex;gap:8px;padding:8px 14px calc(12px + env(safe-area-inset-bottom))}
+form input{flex:1;background:var(--dusk);border:1px solid #3a2f55;color:#fff;border-radius:8px;padding:11px 12px;font:inherit}
+form button{background:var(--petal);color:var(--night);border:0;border-radius:8px;padding:0 16px;font:inherit;font-weight:600}
+#drawer{display:none;position:fixed;inset:0;background:var(--night);z-index:5;padding:18px;overflow-y:auto;max-width:560px;margin:0 auto}
+#drawer.open{display:block}
+#drawer h2{font-family:'Tiro Devanagari Hindi',serif;font-weight:400;color:var(--petal);margin-bottom:10px}
+#drawer li{margin:0 0 8px 18px;line-height:1.4}
+#drawer .row{display:flex;gap:8px;margin:14px 0}
+#drawer button{background:none;border:1px solid #3a2f55;color:var(--mist);border-radius:6px;padding:7px 12px;font:inherit}
+@media (prefers-reduced-motion:reduce){#orb{animation:none!important}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Yashshri</h1>
+  <div class="tools">
+    <button id="autoBtn">Auto-listen: On</button>
+    <button id="memBtn">Memories</button>
+  </div>
+</header>
+
+<div id="log"></div>
+<div id="live"></div>
+
+<div id="stage">
+  <button id="orb" aria-label="Tap to speak"></button>
+  <div id="state">Tap and speak</div>
+</div>
+
+<form id="f">
+  <input id="t" placeholder="Or type here..." autocomplete="off">
+  <button>Send</button>
+</form>
+
+<div id="drawer">
+  <h2>What I remember about you</h2>
+  <ul id="memList"></ul>
+  <div class="row">
+    <button id="exportBtn">Download backup</button>
+    <button id="importBtn">Restore backup</button>
+    <button id="clearBtn">Erase all</button>
+  </div>
+  <button id="closeBtn">Close</button>
+  <input type="file" id="file" accept=".json" hidden>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const store = {
+  get: (k, d) => { try { const v = JSON.parse(localStorage.getItem(k)); return v === null ? d : v; } catch { return d; } },
+  set: (k, v) => localStorage.setItem(k, JSON.stringify(v))
+};
+
+let mem = store.get('ys_mem', []);
+let hist = store.get('ys_hist', []);
+let uname = store.get('ys_name', '');
+let pass = store.get('ys_pass', '');
+let auto = store.get('ys_auto', true);
+let rec = null, busy = false, skipAuto = false, state = 'idle';
+
+const labels = { idle: 'Tap and speak', listen: 'Listening...', think: 'Thinking...', speak: 'Speaking...' };
+function setState(s) {
+  state = s;
+  $('#orb').className = s;
+  $('#state').textContent = labels[s];
+}
+
+function addMsg(who, text, actions) {
+  const d = document.createElement('div');
+  d.className = 'msg ' + who;
+  d.textContent = text;
+  if (actions && actions.length) {
+    const c = document.createElement('div');
+    c.className = 'chips';
+    actions.forEach(a => {
+      if (!a.url) return;
+      const l = document.createElement('a');
+      l.href = a.url; l.target = '_blank'; l.rel = 'noopener';
+      l.textContent = a.label || 'खोलो';
+      c.appendChild(l);
+    });
+    d.appendChild(c);
+  }
+  $('#log').appendChild(d);
+  $('#log').scrollTop = $('#log').scrollHeight;
+}
+
+const native = !!window.Android;
+let pending = [];
+
+function runNative(a) {
+  if (a.type === 'call') Android.call(a.target || '');
+  else if (a.type === 'alarm') Android.alarm(a.hour | 0, a.minute | 0, a.label || 'Yashshri');
+  else if (a.type === 'timer') Android.timer(a.seconds | 0, a.label || 'Yashshri');
+  else if (a.type === 'app') Android.openApp(a.name || '');
+  else if (a.url) Android.openUrl(a.url);
+}
+
+function afterSpeak() {
+  setState('idle');
+  if (native && pending.length) {
+    const p = pending; pending = [];
+    p.forEach(runNative);
+    return;
+  }
+  if (auto && !skipAuto) listen();
+  skipAuto = false;
+}
+
+window.onNativeSpeakStart = () => setState('speak');
+window.onNativeSpeakDone = afterSpeak;
+window.onNativePartial = t => { $('#live').textContent = t; };
+window.onNativeListenEnd = t => {
+  $('#live').textContent = '';
+  if (t) send(t); else if (state === 'listen') setState('idle');
+};
+
+function speak(text) {
+  skipAuto = false;
+  if (native) { setState('speak'); Android.speak(text); return; }
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = 'hi-IN';
+  u.pitch = 1.1;
+  const v = speechSynthesis.getVoices().filter(x => x.lang.toLowerCase().startsWith('hi'));
+  const pick = v.find(x => /female|google|lekha|swara/i.test(x.name)) || v[0];
+  if (pick) u.voice = pick;
+  u.onstart = () => setState('speak');
+  u.onend = afterSpeak;
+  speechSynthesis.speak(u);
+}
+
+function listen() {
+  if (native) { Android.startListening(); setState('listen'); return; }
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) { addMsg('ai', 'Voice is not supported in this browser. Please open this in Chrome on Android.'); return; }
+  speechSynthesis.cancel();
+  rec = new SR();
+  rec.lang = 'hi-IN';
+  rec.interimResults = true;
+  let finalText = '';
+  rec.onresult = e => {
+    let t = '';
+    for (const r of e.results) t += r[0].transcript;
+    finalText = t;
+    $('#live').textContent = t;
+  };
+  rec.onend = () => {
+    $('#live').textContent = '';
+    if (finalText) send(finalText); else if (state === 'listen') setState('idle');
+  };
+  rec.onerror = () => setState('idle');
+  rec.start();
+  setState('listen');
+}
+
+async function send(text) {
+  text = text.trim();
+  if (!text || busy) return;
+  busy = true;
+  addMsg('me', text);
+  setState('think');
+  try {
+    const r = await fetch('/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Pass': pass },
+      body: JSON.stringify({
+        message: text,
+        memory: mem.slice(-150),
+        history: hist.slice(-12),
+        name: uname,
+        now: new Date().toLocaleString('en-IN'),
+        native: native
+      })
+    });
+    const d = await r.json();
+    if (r.status === 401) {
+      pass = prompt('Enter password') || '';
+      store.set('ys_pass', pass);
+    }
+    addMsg('ai', d.reply, d.actions);
+    if (r.ok) {
+      hist.push({ role: 'user', text }, { role: 'model', text: d.reply });
+      hist = hist.slice(-24);
+      store.set('ys_hist', hist);
+      (d.remember || []).forEach(m => { if (m && !mem.includes(m)) mem.push(m); });
+      mem = mem.slice(-300);
+      store.set('ys_mem', mem);
+    }
+    pending = (native && r.ok) ? (d.actions || []) : [];
+    speak(d.reply);
+  } catch (e) {
+    addMsg('ai', 'Connection problem. If the server was asleep, wait a minute and try again.');
+    setState('idle');
+  }
+  busy = false;
+}
+
+$('#orb').onclick = () => {
+  if (state === 'listen') { native ? Android.stopListening() : (rec && rec.stop()); }
+  else if (state === 'speak') { skipAuto = true; pending = []; native ? Android.stopSpeaking() : speechSynthesis.cancel(); setState('idle'); }
+  else if (state === 'idle') listen();
+};
+
+$('#f').onsubmit = e => {
+  e.preventDefault();
+  const v = $('#t').value;
+  $('#t').value = '';
+  send(v);
+};
+
+function paintAuto() { $('#autoBtn').textContent = 'Auto-listen: ' + (auto ? 'On' : 'Off'); }
+$('#autoBtn').onclick = () => { auto = !auto; store.set('ys_auto', auto); paintAuto(); };
+
+function paintMem() {
+  $('#memList').innerHTML = '';
+  if (!mem.length) { $('#memList').innerHTML = '<li>Nothing yet. Talk to her and she will remember.</li>'; return; }
+  mem.forEach(m => { const li = document.createElement('li'); li.textContent = m; $('#memList').appendChild(li); });
+}
+$('#memBtn').onclick = () => { paintMem(); $('#drawer').classList.add('open'); };
+$('#closeBtn').onclick = () => $('#drawer').classList.remove('open');
+$('#clearBtn').onclick = () => {
+  if (confirm('Erase all memories?')) { mem = []; hist = []; store.set('ys_mem', mem); store.set('ys_hist', hist); paintMem(); }
+};
+$('#exportBtn').onclick = () => {
+  const blob = new Blob([JSON.stringify({ name: uname, mem, hist })], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'yashshri-backup.json';
+  a.click();
+};
+$('#importBtn').onclick = () => $('#file').click();
+$('#file').onchange = async e => {
+  try {
+    const d = JSON.parse(await e.target.files[0].text());
+    mem = d.mem || []; hist = d.hist || []; uname = d.name || uname;
+    store.set('ys_mem', mem); store.set('ys_hist', hist); store.set('ys_name', uname);
+    paintMem();
+  } catch { alert('Invalid backup file'); }
+};
+
+// start
+speechSynthesis.onvoiceschanged = () => {};
+paintAuto();
+if (!uname) {
+  uname = prompt('What should Yashshri call you?') || 'दोस्त';
+  store.set('ys_name', uname);
+  addMsg('ai', 'हाय ' + uname + '! मैं यशश्री हूँ। मुझे यशु या बच्चा भी बोल सकते हो। नीचे गोले को दबाओ और बात करो।');
+} else {
+  addMsg('ai', 'अरे ' + uname + '! बोलो, क्या चल रहा है?');
+}
+</script>
+</body>
+  </html>
