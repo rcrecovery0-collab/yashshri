@@ -30,7 +30,7 @@ import java.util.Locale;
 public class MainActivity extends Activity {
 
     // CHANGE THIS to your Render link
-    static final String APP_URL = "https://YOUR-APP-NAME.onrender.com";
+    static final String APP_URL = "https://yashshri.onrender.com";
 
     WebView web;
     SpeechRecognizer recognizer;
