@@ -16,7 +16,7 @@ jobs:
     steps:
       - name: Ping server every 40 seconds
         env:
-          APP_URL: "https://YOUR-APP-NAME.onrender.com"
+          APP_URL: "https://yashshri.onrender.com"
         run: |
           end=$((SECONDS+290))
           while [ $SECONDS -lt $end ]; do
